@@ -159,6 +159,11 @@ label.f{font-size:15px}
 @media (max-width:480px){ .brand{font-size:24px} }
 .verdict .vt{font-size:26px;font-weight:700;line-height:1.35}
 .verdict .vs{font-size:16px;font-weight:400;color:var(--fg);opacity:.85}
+.wl{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.wchip{padding:2px 12px;border-radius:99px;border:1.5px solid var(--bad);color:var(--bad);font-weight:700;font-size:17px;background:var(--surface)}
+.row .txt.wr{color:var(--bad);font-size:14px}
+.fr{margin-top:12px}
+.fr b{font-size:17px}
 </style>
 </head>
 <body>
@@ -342,6 +347,9 @@ const store = {
   function resetGame(){
     var ops = ['game/state','game/rounds','game/marks','game/results','secret/answers'].map(function(p){ return db.doc(p).delete(); });
     subs.forEach(function(x){ ops.push(db.doc('subs/' + x.id).delete()); });
+    var maxR = game && game.round || 0;
+    Object.keys(rounds).forEach(function(k){ maxR = Math.max(maxR, +k.slice(1) || 0); });
+    for(var r = 1; r <= maxR; r++){ (function(r){ subs.forEach(function(x){ ops.push(db.doc('wrongs_r' + r + '/' + x.id).delete().catch(fail)); }); })(r); }
     Promise.all(ops).then(function(){ selRound = null; });
   }
   function savePlan(items){ return db.doc('secret/plan').set({ items: items }); }
@@ -388,7 +396,7 @@ const store = {
   function rankedRows(k){
     var rows = subs.filter(function(s){ return s.answers && s.answers[k]; }).map(function(s){
       var a = s.answers[k];
-      return { id: s.id, nick: s.nick || '이름 없음', text: a.text, ms: a.ms || 0, tries: a.tries || 1, ok: judge(k, s.id, a) };
+      return { id: s.id, nick: s.nick || '이름 없음', text: a.text, ms: a.ms || 0, tries: a.tries || 1, wrong: a.wrong || [], ok: judge(k, s.id, a) };
     });
     var by = function(a,b){ return a.ms - b.ms; };
     var good = rows.filter(function(r){ return r.ok === true; }).sort(by);
@@ -397,6 +405,10 @@ const store = {
     return { good: good, all: good.concat(pend, bad), total: rows.length };
   }
 
+  function wrongLine(x, hidden){
+    if(!x.wrong.length) return '';
+    return '<div class="txt wr">오답 ' + x.wrong.length + '번' + (hidden ? '' : ': ' + x.wrong.map(esc).join(' · ')) + '</div>';
+  }
   function publishResults(){
     var k = curKey(); if(!k) return;
     var r = rankedRows(k).good.slice(0,3).map(function(x,i){ return { rank: i+1, nick: x.nick, text: x.text, ms: x.ms }; });
@@ -456,7 +468,7 @@ const store = {
       var hidden = open && hideOn;
       html += '<div class="row ' + cls + '">' +
         '<div class="rk">' + num + '</div>' +
-        '<div class="who"><div class="nick">' + esc(x.nick) + '</div><div class="txt">' + (hidden ? '제출했어요 (답 가림)' : esc(x.text)) + '</div></div>' +
+        '<div class="who"><div class="nick">' + esc(x.nick) + '</div><div class="txt">' + (hidden ? '제출했어요 (답 가림)' : esc(x.text)) + '</div>' + wrongLine(x, hidden) + '</div>' +
         '<div class="tm">' + fmt(x.ms) + '<small>' + (x.tries > 1 ? x.tries + '번째 시도' : '첫 시도') + '</small></div>' +
         '<div class="ctl"><span class="chip ' + (x.ok === true ? 'ok' : x.ok === false ? 'no' : 'na') + '">' + (x.ok === true ? '정답' : x.ok === false ? '오답' : '채점 전') + '</span>' +
         '<button type="button" class="mini" data-mark="true" data-uid="' + esc(x.id) + '" aria-pressed="' + (marks[k] && marks[k][x.id] === true) + '">O</button>' +
@@ -470,7 +482,7 @@ const store = {
   function mySubmission(){ var k = curKey(); return k && mySub && mySub.answers ? mySub.answers[k] : null; }
   function stageSig(){
     var s = mySubmission();
-    return [me.joined, canWrite, game && game.round, game && game.status, s ? 'sent' : '', results && results.round].join('|');
+    return [me.joined, canWrite, game && game.round, game && game.status, s ? ('sent' + s.ok + ':' + (s.tries || 0)) : '', results && results.round].join('|');
   }
   var lastSig = '';
   function buildPlay(){
@@ -479,13 +491,13 @@ const store = {
   }
   function renderStage(force){
     if(view !== 'play' || !$('#stage')) return;
-    var sig = stageSig(); if(!force && sig === lastSig) return; lastSig = sig;
+    var sig = stageSig(); if(!force && sig === lastSig) return; lastSig = sig; setTimeout(renderFeed, 0);
     var st = $('#stage'), h = '';
     if(!canWrite){
       st.innerHTML = '<div class="card stack"><h2 class="big">답을 저장하지 못했어요</h2><p class="msg bad" style="margin:0">연결에 문제가 있어요. 화면을 새로고침한 뒤 다시 입장해 보세요. 계속되면 진행자에게 알려 주세요.</p></div>'; return;
     }
     if(!me.joined){
-      st.innerHTML = '<form class="card stack" id="join"><h2 class="big">닉네임을 정해 주세요</h2><label class="f" for="nick"><span>순위판에 이 이름으로 나와요</span><input type="text" id="nick" maxlength="12" autocomplete="off" value="' + esc(me.nick) + '" placeholder="예: 3학년 2반 김선생"></label><button class="btn primary" type="submit">입장하기</button></form>';
+      st.innerHTML = '<form class="card stack" id="join"><h2 class="big">닉네임을 정해 주세요</h2><label class="f" for="nick"><span>순위판에 이 이름으로 나와요</span><input type="text" id="nick" maxlength="12" autocomplete="off" value="' + esc(me.nick) + '" placeholder="이름이나 별명을 입력하세요"></label><button class="btn primary" type="submit">입장하기</button></form>';
       $('#join').addEventListener('submit', function(e){ e.preventDefault(); var n = norm($('#nick').value); if(!n){ $('#nick').focus(); return; } joinAs(n); });
       return;
     }
@@ -496,9 +508,9 @@ const store = {
     var sub = mySubmission();
     var typing = game.mode === 'typing';
     var board = '<div class="chalk"><span class="k">' + (typing ? '그대로 따라 쓰세요' : '자음 퀴즈') + ' · ' + game.round + '번째</span><div class="q ' + ((game.prompt||'').length > 18 ? 'long' : '') + '">' + esc(game.prompt) + '</div>' + (game.hint ? '<div class="h">힌트: ' + esc(game.hint) + '</div>' : '') + '</div>';
-    if(game.status === 'open' && !sub){
+    if(game.status === 'open' && (!sub || (sub.ok === false && !typing))){
       st.innerHTML = '<div class="stack">' + intro + board +
-        '<form class="card stack" id="ans"><label class="f" for="a-in"><span>' + (typing ? '띄어쓰기와 문장부호까지 똑같이 입력하세요' : '정답을 입력하세요') + '</span><input type="text" id="a-in" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send" placeholder="여기에 입력"></label><div id="fb"></div><button class="btn primary" type="submit">전송</button></form></div>';
+        (sub ? wrongBanner(sub) : '') + '<form class="card stack" id="ans"><label class="f" for="a-in"><span>' + (typing ? '띄어쓰기와 문장부호까지 똑같이 입력하세요' : '정답을 입력하세요') + '</span><input type="text" id="a-in" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send" placeholder="여기에 입력"></label><div id="fb"></div><button class="btn primary" type="submit">전송</button></form><div id="feed"></div></div>';
       var inp = $('#a-in');
       if(typing){ inp.addEventListener('paste', function(e){ e.preventDefault(); }); inp.addEventListener('drop', function(e){ e.preventDefault(); }); }
       $('#ans').addEventListener('submit', function(e){ e.preventDefault(); submitAnswer(); });
@@ -507,16 +519,26 @@ const store = {
     }
     if(sub){
       var closedNote = game.status === 'open' ? '진행자가 마감하면 순위를 발표해요.' : '마감됐어요. 다음 문제를 기다려 주세요.';
-      st.innerHTML = '<div class="stack">' + intro + board + verdict(sub) + '<div class="card"><div class="note">내가 보낸 답</div><div style="font-size:18px;font-weight:700;overflow-wrap:anywhere">' + esc(sub.text) + '</div></div><p class="note" style="margin:0">' + closedNote + '</p>' + podium() + '</div>';
+      st.innerHTML = '<div class="stack">' + intro + board + verdict(sub) + wrongCard(sub) + '<div class="card"><div class="note">내가 보낸 답</div><div style="font-size:18px;font-weight:700;overflow-wrap:anywhere">' + esc(sub.text) + '</div></div><p class="note" style="margin:0">' + closedNote + '</p>' + podium() + '<div id="feed"></div></div>';
       return;
     }
-    st.innerHTML = '<div class="stack">' + intro + '<div class="card empty"><b>마감됐어요</b>이번 문제는 제출하지 못했어요.</div>' + podium() + '</div>';
+    st.innerHTML = '<div class="stack">' + intro + '<div class="card empty"><b>마감됐어요</b>이번 문제는 제출하지 못했어요.</div>' + podium() + '<div id="feed"></div></div>';
   }
   function verdict(sub){
     var t = sub.ok === true ? '제출되었고 정답입니다!' : sub.ok === false ? '제출되었지만 오답입니다.' : '제출되었습니다.';
     var c = sub.ok === true ? 'good' : sub.ok === false ? 'bad' : '';
     var more = sub.ok == null ? '정답 여부는 진행자가 알려 드려요. ' : '';
     return '<div class="msg ' + c + ' verdict" role="status"><div class="vt">' + t + '</div><div class="vs">' + more + fmt(sub.ms || 0) + ' 걸렸어요</div></div>';
+  }
+  function wchips(list){ return '<div class="wl">' + list.map(function(w){ return '<span class="wchip">' + esc(w) + '</span>'; }).join('') + '</div>'; }
+  function wrongBanner(sub){
+    var w = sub.wrong || [];
+    return '<div class="msg bad verdict" role="status"><div class="vt">제출되었지만 오답입니다.</div><div class="vs">다시 도전할 수 있어요. 맞히면 끝나요.</div>' + (w.length ? wchips(w) : '') + '</div>';
+  }
+  function wrongCard(sub){
+    var w = sub.wrong || [];
+    if(!w.length) return '';
+    return '<div class="card"><div class="note">틀린 답 기록 (' + w.length + '번)</div>' + wchips(w) + '</div>';
   }
   function podium(){
     if(!results || !game || results.round !== game.round || !results.rows || !results.rows.length) return '';
@@ -546,8 +568,15 @@ const store = {
     $('#ans button[type=submit]').disabled = true;
     var vp = typing ? Promise.resolve(true) : (ahs.length ? sha('sj|' + round + '|' + loose(text)).then(function(h){ return ahs.indexOf(h) >= 0; }) : Promise.resolve(null));
     vp.catch(function(){ return null; }).then(function(ok){
-      var patch = { nick: me.nick, answers: {} }; patch.answers[k] = { text: text, ms: ms, tries: tries, ts: Date.now(), ok: ok };
-      return db.doc('subs/' + uid).update(patch);
+      var prior = mySubmission();
+      if(prior && prior.ok === true) return;
+      var wrong = (prior && prior.wrong) ? prior.wrong.slice() : [];
+      var tn = typing ? tries : ((prior && prior.tries || 0) + 1);
+      if(ok === false && wrong.indexOf(text) < 0) wrong.push(text);
+      var patch = { nick: me.nick, answers: {} }; patch.answers[k] = { text: text, ms: ms, tries: tn, ts: Date.now(), ok: ok, wrong: wrong };
+      return db.doc('subs/' + uid).update(patch).then(function(){
+        if(ok === false) db.doc('wrongs_r' + round + '/' + uid).set({ nick: me.nick, list: wrong, at: Date.now() }).catch(fail);
+      });
     }).catch(function(){
       $('#fb').innerHTML = '<div class="msg bad" role="alert">전송하지 못했어요. 잠시 후 다시 눌러 주세요.</div>';
       $('#ans button[type=submit]').disabled = false;
@@ -560,7 +589,29 @@ const store = {
     document.querySelectorAll('#tabs button').forEach(function(b){ b.setAttribute('aria-pressed', String(b.dataset.v === v)); });
     if(v === 'host') buildHost(); else buildPlay();
   }
+  var feedUnsub = null, feedRound = null, feed = [];
+  function watchFeed(){
+    var r = game && game.round || null;
+    if(r === feedRound || isHost) return;
+    if(feedUnsub){ try{ feedUnsub(); }catch(e){} feedUnsub = null; }
+    feedRound = r; feed = [];
+    if(!r){ renderFeed(); return; }
+    feedUnsub = db.collection('wrongs_r' + r).onSnapshot(function(q){
+      feed = q.docs.map(function(d){ var x = d.data() || {}; x.id = d.id; return x; });
+      renderFeed();
+    }, fail);
+  }
+  function renderFeed(){
+    var el = $('#feed'); if(!el) return;
+    var list = feed.filter(function(x){ return x.id !== uid && x.list && x.list.length; })
+      .sort(function(a, b){ return (b.at || 0) - (a.at || 0); }).slice(0, 20);
+    if(!list.length){ el.innerHTML = ''; return; }
+    var n = list.reduce(function(t, x){ return t + x.list.length; }, 0);
+    el.innerHTML = '<div class="card"><div class="note">다른 분들이 틀린 답 (' + n + '개)</div>' +
+      list.map(function(x){ return '<div class="fr"><b>' + esc(x.nick || '') + '</b>' + wchips(x.list) + '</div>'; }).join('') + '</div>';
+  }
   function onGame(){
+    watchFeed();
     if(game && game.status === 'open' && shownFor !== game.openedAt){ shownFor = game.openedAt; shownAt = performance.now(); tries = 0; }
     if(view === 'host') hostRefresh(); else renderStage();
   }
