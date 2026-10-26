@@ -157,6 +157,8 @@ label.f{font-size:15px}
 @media (max-width:820px){ .dock .btn{font-size:16px} }
 .brand{word-break:keep-all;text-wrap:balance}
 @media (max-width:480px){ .brand{font-size:24px} }
+.verdict .vt{font-size:26px;font-weight:700;line-height:1.35}
+.verdict .vs{font-size:16px;font-weight:400;color:var(--fg);opacity:.85}
 </style>
 </head>
 <body>
@@ -214,6 +216,12 @@ const store = {
   var norm = function(s){ return (s||'').normalize('NFC').replace(/\s+/g,' ').trim(); };
   var loose = function(s){ return norm(s).toLowerCase().replace(/[\s.,!?'"“”‘’~·…\-—()]/g,''); };
   var fmt = function(ms){ return (ms/1000).toFixed(2) + '초'; };
+  var sha = function(t){
+    if(!(window.crypto && crypto.subtle)) return Promise.reject(new Error('nosubtle'));
+    return crypto.subtle.digest('SHA-256', new TextEncoder().encode(t)).then(function(d){
+      return Array.from(new Uint8Array(d)).map(function(x){ return x.toString(16).padStart(2,'0'); }).join('');
+    });
+  };
   var lsGet = function(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } };
   var lsSet = function(k,v){ try{ localStorage.setItem(k,v); }catch(e){} };
   var main = $('#main');
@@ -240,7 +248,7 @@ const store = {
     var meta = metaFor(k); if(!meta) return null;
     var ans = meta.mode === 'typing' ? meta.prompt : answers[k];
     if(!ans) return null;
-    return meta.mode === 'typing' ? norm(a.text) === norm(ans) : loose(a.text) === loose(ans);
+    return meta.mode === 'typing' ? norm(a.text) === norm(ans) : String(ans).split('/').some(function(x){ return loose(x) && loose(x) === loose(a.text); });
   }
 
   /* ---------------- 진행자 ---------------- */
@@ -254,7 +262,7 @@ const store = {
             '<input type="radio" name="mode" id="m-typing" value="typing"><label for="m-typing">따라 쓰기</label>' +
           '</div>' +
           '<label class="f" for="in-prompt"><span id="lb-prompt">자음 문제</span><textarea id="in-prompt" placeholder="예: ㅅㄱㅎ ㄱㅈㅂㅇ"></textarea></label>' +
-          '<label class="f" for="in-answer" id="wrap-answer"><span>정답 (참가자에게는 보이지 않아요)</span><input type="text" id="in-answer" autocomplete="off" placeholder="예: 소금하고 간장볶음"></label>' +
+          '<label class="f" for="in-answer" id="wrap-answer"><span>정답 (참가자에게는 보이지 않아요. 정답이 여러 개면 / 로 구분)</span><input type="text" id="in-answer" autocomplete="off" placeholder="예: 소금하고 간장볶음"></label>' +
           '<label class="f" for="in-hint" id="wrap-hint"><span>힌트 (선택)</span><input type="text" id="in-hint" autocomplete="off" placeholder="예: 음식 이름"></label>' +
           '<button type="button" class="btn" id="b-add">목록에 추가</button>' +
           '<div id="qlist"></div>' +
@@ -324,8 +332,11 @@ const store = {
     var meta = {}; meta[k] = { mode: q.mode, prompt: q.prompt, hint: hint };
     var step = upsert(db.doc('game/rounds'), meta);
     if(q.mode === 'quiz' && q.answer){ var a = {}; a[k] = q.answer; step = step.then(function(){ return upsert(db.doc('secret/answers'), a); }); }
+    var list = (q.mode === 'quiz' && q.answer) ? q.answer.split('/').map(function(x){ return loose(x); }).filter(Boolean) : [];
     step.then(function(){
-      return db.doc('game/state').set({ round: n, mode: q.mode, prompt: q.prompt, hint: hint, status: 'open', openedAt: Date.now() });
+      return Promise.all(list.map(function(x){ return sha('sj|' + n + '|' + x); })).catch(function(){ return []; });
+    }).then(function(ah){
+      return db.doc('game/state').set({ round: n, mode: q.mode, prompt: q.prompt, hint: hint, ah: ah, status: 'open', openedAt: Date.now() });
     }).then(function(){ selRound = null; });
   }
   function resetGame(){
@@ -496,10 +507,16 @@ const store = {
     }
     if(sub){
       var closedNote = game.status === 'open' ? '진행자가 마감하면 순위를 발표해요.' : '마감됐어요. 다음 문제를 기다려 주세요.';
-      st.innerHTML = '<div class="stack">' + intro + board + '<div class="msg good">전송 완료! ' + fmt(sub.ms || 0) + ' 걸렸어요.</div><div class="card"><div class="note">내가 보낸 답</div><div style="font-size:18px;font-weight:700;overflow-wrap:anywhere">' + esc(sub.text) + '</div></div><p class="note" style="margin:0">' + closedNote + '</p>' + podium() + '</div>';
+      st.innerHTML = '<div class="stack">' + intro + board + verdict(sub) + '<div class="card"><div class="note">내가 보낸 답</div><div style="font-size:18px;font-weight:700;overflow-wrap:anywhere">' + esc(sub.text) + '</div></div><p class="note" style="margin:0">' + closedNote + '</p>' + podium() + '</div>';
       return;
     }
     st.innerHTML = '<div class="stack">' + intro + '<div class="card empty"><b>마감됐어요</b>이번 문제는 제출하지 못했어요.</div>' + podium() + '</div>';
+  }
+  function verdict(sub){
+    var t = sub.ok === true ? '제출되었고 정답입니다!' : sub.ok === false ? '제출되었지만 오답입니다.' : '제출되었습니다.';
+    var c = sub.ok === true ? 'good' : sub.ok === false ? 'bad' : '';
+    var more = sub.ok == null ? '정답 여부는 진행자가 알려 드려요. ' : '';
+    return '<div class="msg ' + c + ' verdict" role="status"><div class="vt">' + t + '</div><div class="vs">' + more + fmt(sub.ms || 0) + ' 걸렸어요</div></div>';
   }
   function podium(){
     if(!results || !game || results.round !== game.round || !results.rows || !results.rows.length) return '';
@@ -525,9 +542,13 @@ const store = {
       $('#fb').innerHTML = '<div class="msg bad" role="alert">' + (i + 1) + '번째 글자부터 달라요. 고쳐서 다시 전송하세요.</div>';
       inp.focus(); return;
     }
-    var patch = { nick: me.nick, answers: {} }; patch.answers[curKey()] = { text: text, ms: ms, tries: tries, ts: Date.now() };
+    var round = game.round, k = curKey(), ahs = game.ah || [], typing = game.mode === 'typing';
     $('#ans button[type=submit]').disabled = true;
-    db.doc('subs/' + uid).update(patch).catch(function(){
+    var vp = typing ? Promise.resolve(true) : (ahs.length ? sha('sj|' + round + '|' + loose(text)).then(function(h){ return ahs.indexOf(h) >= 0; }) : Promise.resolve(null));
+    vp.catch(function(){ return null; }).then(function(ok){
+      var patch = { nick: me.nick, answers: {} }; patch.answers[k] = { text: text, ms: ms, tries: tries, ts: Date.now(), ok: ok };
+      return db.doc('subs/' + uid).update(patch);
+    }).catch(function(){
       $('#fb').innerHTML = '<div class="msg bad" role="alert">전송하지 못했어요. 잠시 후 다시 눌러 주세요.</div>';
       $('#ans button[type=submit]').disabled = false;
     });
